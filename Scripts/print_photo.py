@@ -15,7 +15,12 @@ paper_width = int(sys.argv[2]) if len(sys.argv) > 2 else HEAD_WIDTH
 img = Image.open(path).convert("L")
 w, h = img.size
 img = img.resize((paper_width, int(h * paper_width / w)))
-arr = np.array(img, dtype=np.float64) / 255.0
+arr = np.array(img, dtype=np.float64)
+lo, hi = np.percentile(arr, [1, 99])
+if hi > lo:
+    arr = np.clip((arr - lo) / (hi - lo), 0, 1)
+else:
+    arr = arr / 255.0
 arr = np.power(arr, GAMMA) * 255.0
 img = Image.fromarray(arr.astype(np.uint8), mode="L").convert("1")
 

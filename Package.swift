@@ -8,7 +8,8 @@ let package = Package(
         .executableTarget(
             name: "photobooth",
             path: "Sources",
-            exclude: ["Info.plist"]
+            exclude: ["Info.plist"],
+            resources: [.process("Shaders")]
         )
     ]
 )
