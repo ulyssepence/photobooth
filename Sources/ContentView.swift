@@ -49,20 +49,6 @@ struct ContentView: View {
                 .padding(.leading, 16)
                 .padding(.bottom, 30)
 
-                Button(action: printPhoto) {
-                    Text(isPrinting ? "Printing..." : "Print")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 40)
-                        .padding(.vertical, 14)
-                        .background(isPrinting ? Color.gray : Color.black.opacity(0.7))
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(isPrinting)
-                .padding(.bottom, 30)
-
                 if let msg = statusMessage ?? camera.error {
                     Text(msg)
                         .foregroundColor(.red)
@@ -74,24 +60,40 @@ struct ContentView: View {
                 }
             }
 
-            ScrollView {
-                VStack(spacing: 4) {
-                    FilterButton(name: "None", isSelected: selectedFilterId == nil) {
-                        selectedFilterId = nil
-                        camera.activeFilter = nil
-                    }
-                    ForEach(filters) { filter in
-                        FilterButton(name: filter.name, isSelected: selectedFilterId == filter.id) {
-                            if selectedFilterId == filter.id {
-                                selectedFilterId = nil
-                                camera.activeFilter = nil
-                            } else {
-                                selectedFilterId = filter.id
-                                camera.activeFilter = filter.chain
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        FilterButton(name: "None", isSelected: selectedFilterId == nil) {
+                            selectedFilterId = nil
+                            camera.activeFilter = nil
+                        }
+                        ForEach(filters) { filter in
+                            FilterButton(name: filter.name, isSelected: selectedFilterId == filter.id) {
+                                if selectedFilterId == filter.id {
+                                    selectedFilterId = nil
+                                    camera.activeFilter = nil
+                                } else {
+                                    selectedFilterId = filter.id
+                                    camera.activeFilter = filter.chain
+                                }
                             }
                         }
                     }
+                    .padding(8)
                 }
+
+                Button(action: printPhoto) {
+                    Text(isPrinting ? "Printing..." : "Print")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(isPrinting ? Color.gray : Color.white.opacity(0.2))
+                        .cornerRadius(8)
+                }
+                .buttonStyle(.plain)
+                .disabled(isPrinting)
                 .padding(8)
             }
             .frame(width: 160)
