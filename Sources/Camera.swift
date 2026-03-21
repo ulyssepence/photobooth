@@ -8,6 +8,7 @@ class Camera: NSObject, ObservableObject {
     let session = AVCaptureSession()
     @Published var error: String?
     @Published var filteredFrame: CIImage?
+    private var captureImage: CIImage?
 
     var activeFilter: FilterChain? {
         didSet { filterStartTime = CACurrentMediaTime() }
@@ -64,9 +65,25 @@ class Camera: NSObject, ObservableObject {
     }
 
     func captureFrame() -> NSImage? {
-        guard let ci = filteredFrame else { return nil }
+        guard let ci = captureImage else { return nil }
         guard let cg = ciContext.createCGImage(ci, from: ci.extent) else { return nil }
-        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        saveToOutput(image)
+        return image
+    }
+
+    private var saveIndex = 0
+
+    private func saveToOutput(_ image: NSImage) {
+        let dir = URL(fileURLWithPath: NSString("~/Source/photobooth/output").expandingTildeInPath)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        saveIndex += 1
+        let path = dir.appendingPathComponent("\(fmt.string(from: Date()))_\(saveIndex).png")
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: path)
     }
 }
 
@@ -78,6 +95,7 @@ extension Camera: AVCaptureVideoDataOutputSampleBufferDelegate {
             let elapsed = CACurrentMediaTime() - filterStartTime
             image = filter(image, elapsed)
         }
+        let forCapture = image
         if printPreview, let kernel = printPreviewKernel {
             let ext = image.extent
             let mono = CIFilter.colorControls()
@@ -92,6 +110,9 @@ extension Camera: AVCaptureVideoDataOutputSampleBufferDelegate {
             image = kernel.apply(extent: ext, arguments: [enhanced]) ?? enhanced
         }
         let result = image
-        DispatchQueue.main.async { self.filteredFrame = result }
+        DispatchQueue.main.async {
+            self.captureImage = forCapture
+            self.filteredFrame = result
+        }
     }
 }
