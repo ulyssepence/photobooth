@@ -22,6 +22,7 @@ enum Filters {
         ("puppet_show",          "Puppet Show",          "combo_puppet_show",          true),
         ("color_wheel",          "Color Wheel",          "combo_color_wheel",          true),
         ("gnome",                "Gnome",                "combo_gnome",                true),
+        ("dither",               "Dither",               "combo_dither",               true),
         ("us",                   "Us",                   "combo_us",                   true),
         ("the_matrix",           "The Matrix",           "combo_the_matrix",           true),
         ("water_color",          "Water Color",          "combo_water_color",          true),

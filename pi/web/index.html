@@ -219,6 +219,26 @@ vec3 hsv2rgb(vec3 c) {
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 vec3 vid(vec2 uv) { return texture2D(u_tex, fract(uv)).rgb; }
+float bayer2(float x, float y) { return x * 2.0 + y * 3.0 - x * y * 4.0; }
+// XOR of bit rx (0|1) into 3*rx (binary 11 or 00) with bit ry — closed form.
+float xor3ry(float rx, float ry) { return 3.0*rx + ry - 2.0*rx*ry; }
+// Hilbert curve index for a 16x16 tile — GPU stand-in for Riemersma ordering.
+float hilbert_d_16(vec2 p) {
+    float x = mod(p.x, 16.0), y = mod(p.y, 16.0);
+    float d = 0.0, rx, ry, t;
+    rx = mod(floor(x/8.0), 2.0); ry = mod(floor(y/8.0), 2.0);
+    d += 64.0 * xor3ry(rx, ry);
+    if (ry < 0.5) { if (rx > 0.5) { x = 15.0 - x; y = 15.0 - y; } t = x; x = y; y = t; }
+    rx = mod(floor(x/4.0), 2.0); ry = mod(floor(y/4.0), 2.0);
+    d += 16.0 * xor3ry(rx, ry);
+    if (ry < 0.5) { if (rx > 0.5) { x = 15.0 - x; y = 15.0 - y; } t = x; x = y; y = t; }
+    rx = mod(floor(x/2.0), 2.0); ry = mod(floor(y/2.0), 2.0);
+    d += 4.0 * xor3ry(rx, ry);
+    if (ry < 0.5) { if (rx > 0.5) { x = 15.0 - x; y = 15.0 - y; } t = x; x = y; y = t; }
+    rx = mod(x, 2.0); ry = mod(y, 2.0);
+    d += xor3ry(rx, ry);
+    return d;
+}
 float bulge_uv(inout vec2 uv, vec2 center, float strength, float radius) {
   vec2 d = uv - center;
   float dist = length(d);
@@ -261,6 +281,39 @@ const FILTERS = [
     float luma = dot(color, vec3(0.299,0.587,0.114));
     vec3 cycled = palette(vec3(0.5),vec3(0.5),vec3(1.0),vec3(0.0,0.33,0.67), luma + u_time*0.2);
     color = mix(color, cycled, 0.29);
+  `)},
+  { id: "dither", name: "Dither", src: frag(`
+    vec3 src = vid(uv);
+    float luma = pow(dot(src, vec3(0.299, 0.587, 0.114)), 1.0 / 1.8);
+    // Scale dither cell up by 4x so the pattern survives print resampling.
+    float fx = floor(gl_FragCoord.x / 4.0), fy = floor(gl_FragCoord.y / 4.0);
+    int pattern = int(mod(floor(u_time), 7.0));
+    float threshold = 0.5;
+    if (pattern == 0) {
+      float x = mod(fx, 2.0), y = mod(fy, 2.0);
+      threshold = (bayer2(x, y) + 0.5) / 4.0;
+    } else if (pattern == 1) {
+      float x = mod(fx, 4.0), y = mod(fy, 4.0);
+      float x1 = mod(x, 2.0), x2 = floor(x / 2.0);
+      float y1 = mod(y, 2.0), y2 = floor(y / 2.0);
+      threshold = ((4.0 * bayer2(x2, y2) + bayer2(x1, y1)) + 0.5) / 16.0;
+    } else if (pattern == 2) {
+      float x = mod(fx, 8.0), y = mod(fy, 8.0);
+      float x1 = mod(x, 2.0), x2 = mod(floor(x/2.0), 2.0), x3 = floor(x/4.0);
+      float y1 = mod(y, 2.0), y2 = mod(floor(y/2.0), 2.0), y3 = floor(y/4.0);
+      threshold = ((16.0 * bayer2(x3, y3) + 4.0 * bayer2(x2, y2) + bayer2(x1, y1)) + 0.5) / 64.0;
+    } else if (pattern == 3) {
+      threshold = hash(vec2(fx, fy));
+    } else if (pattern == 4) {
+      vec2 cell = fract(vec2(fx, fy) / 6.0) - 0.5;
+      threshold = clamp(1.0 - length(cell) * 2.0, 0.0, 1.0);
+    } else if (pattern == 5) {
+      threshold = (mod(fy, 4.0) + 0.5) / 4.0;
+    } else {
+      threshold = (hilbert_d_16(vec2(fx, fy)) + 0.5) / 256.0;
+    }
+    float v = luma > threshold ? 1.0 : 0.0;
+    vec3 color = vec3(v);
   `)},
   { id: "us", name: "Us", src: frag(`
     bulge_uv(uv, vec2(0.5), -0.97, 0.91);

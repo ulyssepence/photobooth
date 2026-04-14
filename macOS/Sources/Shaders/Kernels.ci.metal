@@ -465,6 +465,79 @@ extern "C" float4 combo_knights(ci_sampler src, float time, float w, float h, de
     return float4(color, 1.0);
 }
 
+// 17. Dither: cycles through 7 patterns (750ms each). "On" pixels keep source color.
+
+constant float dither_bayer2[4] = { 0, 2, 3, 1 };
+
+constant float dither_bayer4[16] = {
+     0,  8,  2, 10,
+    12,  4, 14,  6,
+     3, 11,  1,  9,
+    15,  7, 13,  5
+};
+
+constant float dither_bayer8[64] = {
+     0, 32,  8, 40,  2, 34, 10, 42,
+    48, 16, 56, 24, 50, 18, 58, 26,
+    12, 44,  4, 36, 14, 46,  6, 38,
+    60, 28, 52, 20, 62, 30, 54, 22,
+     3, 35, 11, 43,  1, 33,  9, 41,
+    51, 19, 59, 27, 49, 17, 57, 25,
+    15, 47,  7, 39, 13, 45,  5, 37,
+    63, 31, 55, 23, 61, 29, 53, 21
+};
+
+// Hilbert curve index for a 16x16 tile — GPU stand-in for Riemersma ordering.
+int hilbert_d_16(int2 p) {
+    int x = p.x, y = p.y, d = 0;
+    for (int s = 8; s > 0; s /= 2) {
+        int rx = (x / s) & 1;
+        int ry = (y / s) & 1;
+        d += s * s * ((3 * rx) ^ ry);
+        if (ry == 0) {
+            if (rx == 1) { x = 15 - x; y = 15 - y; }
+            int t = x; x = y; y = t;
+        }
+    }
+    return d;
+}
+
+extern "C" float4 combo_dither(ci_sampler src, float time, float w, float h, destination dest) {
+    float2 coord = dest.coord();
+    float2 uv = coord / float2(w, h);
+
+    float3 color = vid(src, uv, w, h);
+    float luma = dot(color, float3(0.299, 0.587, 0.114));
+    luma = pow(luma, 1.0 / 1.8);
+
+    int pattern = int(floor(time)) % 7;
+    if (pattern < 0) pattern += 7;
+    // Scale each dither cell up by 4x so the pattern survives print resampling.
+    int2 pos = int2(floor(coord / 4.0));
+
+    float threshold = 0.5;
+    if (pattern == 0) {
+        threshold = (dither_bayer2[(pos.y % 2) * 2 + (pos.x % 2)] + 0.5) / 4.0;
+    } else if (pattern == 1) {
+        threshold = (dither_bayer4[(pos.y % 4) * 4 + (pos.x % 4)] + 0.5) / 16.0;
+    } else if (pattern == 2) {
+        threshold = (dither_bayer8[(pos.y % 8) * 8 + (pos.x % 8)] + 0.5) / 64.0;
+    } else if (pattern == 3) {
+        threshold = hash(float2(pos));
+    } else if (pattern == 4) {
+        float2 cell = fract(float2(pos) / 6.0) - 0.5;
+        threshold = clamp(1.0 - length(cell) * 2.0, 0.0, 1.0);
+    } else if (pattern == 5) {
+        threshold = (float(pos.y % 4) + 0.5) / 4.0;
+    } else {
+        int2 tile = int2(pos.x % 16, pos.y % 16);
+        threshold = (float(hilbert_d_16(tile)) + 0.5) / 256.0;
+    }
+
+    float v = luma > threshold ? 1.0 : 0.0;
+    return float4(v, v, v, 1.0);
+}
+
 // --- Print preview: grayscale → gamma → Bayer ordered dither ---
 
 constant float bayer8x8[64] = {
