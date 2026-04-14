@@ -1,0 +1,175 @@
+#!/opt/photobooth-cups/bin/python
+"""CUPS backend that converts incoming jobs to ESC/POS for /dev/usb/lp0.
+
+CUPS invokes a backend with argv:
+    [device-uri, job-id, user, title, copies, options, [filename]]
+With no argv (or device-uri only), it must self-describe to stdout for discovery.
+The job data arrives on stdin (or from filename if provided).
+
+Supported inputs (auto-detected by magic bytes):
+- PDF: rasterized via pdftoppm at 203dpi, each page printed as a bitmap
+- PNG/JPEG: printed as a bitmap
+- text/plain: written raw with init+cut (ESC/POS understands ASCII)
+"""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from io import BytesIO
+from pathlib import Path
+
+from PIL import Image
+from escpos.printer import File
+
+DEVICE = "/dev/usb/lp0"
+WIDTHS = {"58": 384, "80": 576}  # mm → dots @ 203dpi
+DEFAULT_WIDTH_MM = "80"
+
+
+def width_from_options(options: str) -> int:
+    """CUPS passes options as a space-separated key=value string in argv[5].
+    Use `lp -o media=80mm` (or 58mm) to override the queue default.
+    """
+    for tok in (options or "").split():
+        if tok.startswith("media=") or tok.startswith("PageSize="):
+            v = tok.split("=", 1)[1].lower().rstrip("mm")
+            if v in WIDTHS:
+                return WIDTHS[v]
+    return WIDTHS[DEFAULT_WIDTH_MM]
+
+
+WIDTH_PX = WIDTHS[DEFAULT_WIDTH_MM]  # rebound in main()
+
+
+def log(msg: str) -> None:
+    sys.stderr.write(f"DEBUG: photobooth-backend: {msg}\n")
+    sys.stderr.flush()
+
+
+def discover() -> None:
+    # Tells CUPS this backend exists and what device it offers.
+    print('direct photobooth "Unknown" "Photobooth Thermal Backend" "MFG:Generic;MDL:Thermal;CMD:ESCPOS;"')
+    sys.exit(0)
+
+
+def read_job() -> bytes:
+    # If a filename was provided as the last argv, read it; else read stdin.
+    if len(sys.argv) >= 7:
+        return Path(sys.argv[6]).read_bytes()
+    return sys.stdin.buffer.read()
+
+
+def detect(data: bytes) -> str:
+    if data.startswith(b"%PDF"):
+        return "pdf"
+    if data.startswith(b"%!PS") or data.startswith(b"\x04%!"):
+        return "ps"
+    if data.startswith(b"\x89PNG"):
+        return "png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    return "text"
+
+
+def prepare_image(img: Image.Image) -> Image.Image:
+    if img.mode != "L":
+        img = img.convert("L")
+    if img.width != WIDTH_PX:
+        h = max(1, round(img.height * WIDTH_PX / img.width))
+        img = img.resize((WIDTH_PX, h), Image.LANCZOS)
+    return img.convert("1", dither=Image.FLOYDSTEINBERG)
+
+
+def print_bitmap(img: Image.Image) -> None:
+    p = File(DEVICE)
+    try:
+        p.image(prepare_image(img))
+        p.cut()
+    finally:
+        p.close()
+
+
+def print_pdf(data: bytes) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        pdf = Path(td) / "in.pdf"
+        pdf.write_bytes(data)
+        # 203 dpi matches the printer's native resolution.
+        subprocess.run(
+            ["pdftoppm", "-png", "-r", "203", str(pdf), str(Path(td) / "page")],
+            check=True,
+        )
+        pages = sorted(Path(td).glob("page-*.png"))
+        log(f"pdf → {len(pages)} page(s)")
+        for p in pages:
+            with Image.open(p) as img:
+                print_bitmap(img)
+
+
+def print_ps(data: bytes) -> None:
+    # Modern CUPS converts incoming PNG/JPEG to PostScript before invoking the
+    # backend (the legacy "raw queue" no longer bypasses filters). Rasterize
+    # back to PNG via Ghostscript at the printer's native dpi, then print as
+    # bitmaps page-by-page.
+    with tempfile.TemporaryDirectory() as td:
+        ps = Path(td) / "in.ps"
+        ps.write_bytes(data)
+        subprocess.run(
+            ["gs", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pnggray",
+             "-r203", f"-sOutputFile={td}/page-%03d.png", str(ps)],
+            check=True, stdout=subprocess.DEVNULL,
+        )
+        pages = sorted(Path(td).glob("page-*.png"))
+        log(f"ps → {len(pages)} page(s)")
+        for p in pages:
+            with Image.open(p) as img:
+                print_bitmap(img)
+
+
+def print_text(data: bytes) -> None:
+    p = File(DEVICE)
+    try:
+        # ESC @ resets the printer; without it, the head can swallow leading bytes
+        # while waking from idle.
+        p._raw(b"\x1b@")
+        p._raw(data)
+        if not data.endswith(b"\n"):
+            p._raw(b"\n")
+        p._raw(b"\n\n")
+        p.cut()
+    finally:
+        p.close()
+
+
+def main() -> int:
+    if len(sys.argv) <= 1:
+        discover()
+    log(f"argv={sys.argv[1:]}")
+    global WIDTH_PX
+    options = sys.argv[5] if len(sys.argv) >= 6 else ""
+    WIDTH_PX = width_from_options(options)
+    log(f"width_px={WIDTH_PX}")
+    data = read_job()
+    if not data:
+        log("empty job")
+        return 0
+    kind = detect(data)
+    log(f"kind={kind} bytes={len(data)}")
+    try:
+        if kind == "pdf":
+            print_pdf(data)
+        elif kind == "ps":
+            print_ps(data)
+        elif kind in ("png", "jpeg"):
+            with Image.open(BytesIO(data)) as img:
+                print_bitmap(img)
+        else:
+            print_text(data)
+    except Exception as e:
+        log(f"FATAL: {e}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

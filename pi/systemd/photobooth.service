@@ -1,0 +1,16 @@
+[Unit]
+Description=Photobooth printer service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=photobooth
+WorkingDirectory=/home/photobooth/photobooth/pi
+# Replace <UUID> with the secret token printed at install time. Do not commit it.
+ExecStart=/home/photobooth/photobooth/pi/.venv/bin/python app.py --auth-uuid <UUID> --port 8080 --driver file --device /dev/usb/lp0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

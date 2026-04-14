@@ -64,11 +64,11 @@ class Camera: NSObject, ObservableObject {
         printPreviewKernel = try? CIColorKernel(functionName: "print_preview", fromMetalLibraryData: data)
     }
 
-    func captureFrame() -> NSImage? {
+    func captureFrame(save: Bool = true) -> NSImage? {
         guard let ci = captureImage else { return nil }
         guard let cg = ciContext.createCGImage(ci, from: ci.extent) else { return nil }
         let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-        saveToOutput(image)
+        if save { saveToOutput(image) }
         return image
     }
 

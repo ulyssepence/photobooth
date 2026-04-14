@@ -6,6 +6,8 @@ struct ContentView: View {
     @State private var statusMessage: String?
     @State private var use58mm = false
     @State private var selectedFilterId: String?
+    @State private var saveImages = true
+    @State private var copies = 1
 
     private var filters: [FilterDef] { Filters.all }
 
@@ -23,6 +25,28 @@ struct ContentView: View {
                         .padding(8)
                         .background(Color.black.opacity(0.5))
                         .cornerRadius(8)
+
+                    Toggle("Save", isOn: $saveImages)
+                        .toggleStyle(.switch)
+                        .foregroundColor(.white)
+                        .padding(8)
+                        .background(Color.black.opacity(0.5))
+                        .cornerRadius(8)
+
+                    HStack(spacing: 6) {
+                        Button(action: { if copies > 1 { copies -= 1 } }) {
+                            Text("-").font(.title3.bold()).foregroundColor(.white).frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                        Text("\(copies)x").foregroundColor(.white).font(.system(size: 14, weight: .medium)).monospacedDigit()
+                        Button(action: { if copies < 5 { copies += 1 } }) {
+                            Text("+").font(.title3.bold()).foregroundColor(.white).frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(8)
+                    .background(Color.black.opacity(0.5))
+                    .cornerRadius(8)
 
                     Toggle("B&W", isOn: $camera.printPreview)
                         .toggleStyle(.switch)
@@ -123,21 +147,26 @@ struct ContentView: View {
     }
 
     private func printPhoto() {
-        guard let image = camera.captureFrame() else {
+        guard let image = camera.captureFrame(save: saveImages) else {
             statusMessage = "No frame available"
             return
         }
         isPrinting = true
         statusMessage = nil
         let width = use58mm ? Printer.paperWidth58mm : Printer.paperWidth80mm
+        let count = copies
         Task.detached {
-            let result = await Printer.print(image: image, paperWidth: width)
-            await MainActor.run {
-                isPrinting = false
+            for i in 0..<count {
+                let result = await Printer.print(image: image, paperWidth: width)
                 if case .failure(let err) = result {
-                    statusMessage = err.localizedDescription
+                    await MainActor.run {
+                        isPrinting = false
+                        statusMessage = "Copy \(i + 1) failed: \(err.localizedDescription)"
+                    }
+                    return
                 }
             }
+            await MainActor.run { isPrinting = false }
         }
     }
 }

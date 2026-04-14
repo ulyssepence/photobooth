@@ -1,0 +1,21 @@
+[Unit]
+Description=Photobooth reverse SSH tunnel to king
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=photobooth
+Environment=AUTOSSH_GATETIME=0
+Environment=AUTOSSH_PORT=0
+ExecStart=/usr/bin/autossh -M 0 -N \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+  -i /etc/photobooth/tunnel_key \
+  -R 0.0.0.0:8080:localhost:8080 \
+  -p 2226 photobooth@45.56.101.108
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

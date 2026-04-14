@@ -1,0 +1,17 @@
+[project]
+name = "photobooth-pi"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0",
+    "pillow>=10.0",
+    "python-escpos>=3.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

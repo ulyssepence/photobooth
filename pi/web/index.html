@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>photobooth</title>
+<style>
+  :root {
+    --bar-h: 70px;
+  }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: #000; color: #fff; overflow: hidden;
+    font-family: -apple-system, system-ui, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    user-select: none; -webkit-user-select: none;
+  }
+  #canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #canvas.mirror { transform: scaleX(-1); }
+  #video { display: none; }
+
+  /* Iris: hidden until firing. Scaled up so blade outer edges are off-screen. */
+  #iris {
+    position: fixed; inset: 0; pointer-events: none; z-index: 30;
+    width: 100%; height: 100%;
+    visibility: hidden;
+    transform: scale(2.4);
+    transform-origin: center center;
+  }
+  #iris.firing { visibility: visible; }
+  #iris .blade {
+    fill: #000;
+    stroke: #0a0a0a;
+    stroke-width: 0.4;
+    transform-origin: 49px 0px;
+    transform: rotate(83deg);
+    transition: transform 0.25s cubic-bezier(.7,0,.3,1);
+  }
+  #iris.closed .blade { transform: rotate(53deg); }
+
+  /* Bottom black bar */
+  #bar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    height: calc(var(--bar-h) + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: #000;
+    z-index: 10;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  /* Shutter — white circle with semi-transparent black ring, just above bar. */
+  #shutter {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--bar-h) + env(safe-area-inset-bottom, 0px) + 18px);
+    transform: translateX(-50%);
+    width: 78px; height: 78px; border-radius: 50%;
+    background: #fff;
+    border: 4px solid rgba(0,0,0,0.45);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+    padding: 0;
+    z-index: 12;
+  }
+  #shutter:active { transform: translateX(-50%) scale(0.93); }
+
+  /* Bar contents */
+  #bw-btn {
+    position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+    height: 32px; padding: 0 10px; border-radius: 16px;
+    background: rgba(255,255,255,0.10);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.25);
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  #bw-btn.on { background: #fff; color: #000; }
+
+  #cam-btn {
+    position: absolute; right: 18px; top: 50%; transform: translateY(-50%);
+    width: 44px; height: 44px; border-radius: 50%;
+    background: rgba(255,255,255,0.10);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.25);
+    font-size: 20px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #cam-btn[hidden] { display: none; }
+
+  #lens-wrap {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+  }
+  #lens-wrap .lbl {
+    font-size: 8px; font-weight: 700; letter-spacing: 0.1em;
+    color: rgba(255,255,255,0.55);
+  }
+  #lens-toggle {
+    display: flex; gap: 4px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 18px;
+    padding: 3px;
+  }
+  #lens-toggle button {
+    background: transparent; color: #aaa;
+    border: none;
+    border-radius: 14px;
+    padding: 6px 12px;
+    font-size: 12px; font-weight: 700;
+  }
+  #lens-toggle button.on { background: #fff; color: #000; }
+
+  /* Filter carousel — sits above shutter button */
+  #carousel {
+    position: fixed; left: 0; right: 0;
+    bottom: calc(var(--bar-h) + env(safe-area-inset-bottom, 0px) + 110px);
+    height: 38px;
+    overflow-x: scroll;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    z-index: 11;
+    display: flex;
+    align-items: center;
+    touch-action: pan-x;
+  }
+  #carousel::-webkit-scrollbar { display: none; }
+  #carousel .pad { flex: 0 0 50%; }
+  #carousel .item {
+    flex: 0 0 auto;
+    scroll-snap-align: center;
+    padding: 7px 14px;
+    margin: 0 6px;
+    border-radius: 16px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+    background: transparent;
+    border: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    white-space: nowrap;
+  }
+  #carousel .item.on {
+    color: #ffd60a;
+    background: rgba(30,30,30,0.78);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  }
+
+  #toast {
+    position: fixed; left: 50%; top: 40%; transform: translate(-50%,-50%);
+    background: rgba(0,0,0,0.75); padding: 14px 22px; border-radius: 12px;
+    font-size: 16px; opacity: 0; transition: opacity .2s; pointer-events: none;
+    z-index: 40;
+  }
+  #toast.show { opacity: 1; }
+  #start {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: #000; color: #fff; font-size: 22px; border: none;
+    z-index: 50;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<svg id="iris" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+  <g transform="rotate(0 50 50)"><polygon class="blade" points="50,0 92,32 50,50"/></g>
+  <g transform="rotate(60 50 50)"><polygon class="blade" points="50,0 92,32 50,50"/></g>
+  <g transform="rotate(120 50 50)"><polygon class="blade" points="50,0 92,32 50,50"/></g>
+  <g transform="rotate(180 50 50)"><polygon class="blade" points="50,0 92,32 50,50"/></g>
+  <g transform="rotate(240 50 50)"><polygon class="blade" points="50,0 92,32 50,50"/></g>
+  <g transform="rotate(300 50 50)"><polygon class="blade" points="50,0 92,32 50,50"/></g>
+</svg>
+<video id="video" playsinline muted autoplay></video>
+
+<div id="carousel"></div>
+<button id="shutter" aria-label="Shutter"></button>
+
+<div id="bar">
+  <button id="bw-btn" aria-label="Black and white preview">B&amp;W Preview</button>
+  <div id="lens-wrap">
+    <div class="lbl">PAPER SIZE</div>
+    <div id="lens-toggle">
+      <button id="lens58">58mm</button>
+      <button id="lens80" class="on">80mm</button>
+    </div>
+  </div>
+  <button id="cam-btn" aria-label="Switch camera" hidden>⟳</button>
+</div>
+
+<div id="toast"></div>
+<button id="start">tap to start camera</button>
+
+<script>
+// ---------- filters (ported from Sources/Shaders/Kernels.ci.metal) ----------
+const PRELUDE = `
+precision highp float;
+uniform sampler2D u_tex;
+uniform vec2 u_res;
+uniform float u_time;
+#define PI 3.1415926535897932
+#define TAU 6.28318530717958
+float hash(vec2 uv) { return fract(sin(dot(uv, vec2(12.9898,78.233))) * 43758.5453123); }
+vec3 wn3(vec3 x) { return fract(sin(x * vec3(12.9898,78.233,45.164)) * 43758.5453); }
+vec2 rot(vec2 v, float a) { float s=sin(a),c=cos(a); return vec2(c*v.x-s*v.y, s*v.x+c*v.y); }
+vec3 palette(vec3 a, vec3 b, vec3 c, vec3 d, float t) { return a + b*cos(TAU*(c*t+d)); }
+vec3 rgb2hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-10;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0*d + e)), d / (q.x + e), q.x);
+}
+vec3 hsv2rgb(vec3 c) {
+  vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+  vec3 p = abs(fract(c.xxx + K.xyz)*6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+vec3 vid(vec2 uv) { return texture2D(u_tex, fract(uv)).rgb; }
+float bulge_uv(inout vec2 uv, vec2 center, float strength, float radius) {
+  vec2 d = uv - center;
+  float dist = length(d);
+  float ed = min(min(uv.x, 1.0-uv.x), min(uv.y, 1.0-uv.y));
+  float ef = smoothstep(0.0, 0.3, ed);
+  uv = center + d * (1.0 - strength * ef * smoothstep(radius, 0.0, dist));
+  return dist;
+}
+`;
+
+const FRAG_HEAD = PRELUDE + "\nvoid main() {\n  vec2 uv = gl_FragCoord.xy / u_res;\n";
+const FRAG_TAIL = "\n  gl_FragColor = vec4(color, 1.0);\n}\n";
+
+function frag(body) { return FRAG_HEAD + body + FRAG_TAIL; }
+
+const FILTERS = [
+  { id: "normal", name: "Normal", src: frag(`
+    vec3 color = vid(uv);
+  `)},
+  { id: "potion_seller", name: "Potion Seller", src: frag(`
+    bulge_uv(uv, vec2(0.34, 0.7), 0.5, 0.82);
+    bulge_uv(uv, vec2(0.5, 0.28), -1.0, 0.54);
+    vec3 color = vid(uv);
+  `)},
+  { id: "the_bit", name: "The Bit", src: frag(`
+    bulge_uv(uv, vec2(0.5), 0.76, 0.78);
+    vec3 color = vid(uv);
+    float luma = dot(color, vec3(0.299,0.587,0.114));
+    float band = floor(luma * 4.0) / 4.0;
+    color = palette(wn3(vec3(5.49)), wn3(vec3(5.49,-4.49,-4.49)),
+                    wn3(vec3(-4.49,-4.49,5.49)), wn3(vec3(-4.49,-4.49,-4.49)), band);
+  `)},
+  { id: "gnome", name: "Gnome", src: frag(`
+    uv -= 0.5; uv /= vec2(5.21, 2.81); uv += 0.5;
+    vec3 color = vid(uv);
+    float delta = pow(0.25, 3.0);
+    vec3 blur = (vid(uv+vec2(-delta,0)) + vid(uv+vec2(delta,0))
+              + vid(uv+vec2(0,-delta)) + vid(uv+vec2(0,delta))) / 4.0;
+    color = color + (color - blur) * pow(1.4, 5.0);
+    float luma = dot(color, vec3(0.299,0.587,0.114));
+    vec3 cycled = palette(vec3(0.5),vec3(0.5),vec3(1.0),vec3(0.0,0.33,0.67), luma + u_time*0.2);
+    color = mix(color, cycled, 0.29);
+  `)},
+  { id: "us", name: "Us", src: frag(`
+    bulge_uv(uv, vec2(0.5), -0.97, 0.91);
+    uv += vec2(0.2, 0.0) * u_time;
+    uv *= vec2(5.0, 5.0);
+    vec3 color = vid(uv);
+  `)},
+  { id: "the_matrix", name: "The Matrix", src: frag(`
+    vec2 up = vec2(0.0, 0.7/50.0);
+    vec3 sum = vid(uv);
+    for (float s = 0.0; s < 6.0; s += 1.0)
+      sum += vid(uv - rot(up, s/7.0 * TAU));
+    vec3 color = sum / 7.0;
+    float dt = u_time * 0.08;
+    vec3 p1 = vid(vec2(color.x, color.y) + dt);
+    vec3 p2 = vid(vec2(color.y, color.z) + dt);
+    vec3 p3 = vid(vec2(color.x, color.z) + dt);
+    color = min(p3, min(p1, p2));
+    float luma = dot(color, vec3(0.299,0.587,0.114));
+    color = vec3(luma) * vec3(0.0, 1.0, 0.0) * 2.0;
+  `)},
+  { id: "who_is_that", name: "Who Is That?", src: frag(`
+    float dist = length(uv - vec2(0.5)) - 0.15;
+    float radius = mod(u_time*0.025 + dist, 0.3);
+    if (radius < 0.15) uv = vec2(uv.x, 1.0 - uv.y);
+    float theta = 1.0 * PI / 180.0;
+    uv = rot(uv - 0.5, theta * u_time * TAU) + 0.5;
+    vec3 color = vid(uv);
+    float luma = dot(color, vec3(0.299,0.587,0.114));
+    float band = floor(luma * 25.0) / 25.0;
+    color = palette(wn3(vec3(3.56)), wn3(vec3(3.56,-2.56,-2.56)),
+                    wn3(vec3(-2.56,-2.56,3.56)), wn3(vec3(-2.56,-2.56,-2.56)), band);
+  `)},
+  { id: "it_can_feel_that_way", name: "It Can Feel That Way", src: frag(`
+    vec3 color = vid(uv);
+    color = vec3(float(color.r<0.5), float(color.g<0.5), float(color.b<0.5));
+    float d = 0.002;
+    vec3 c1 = vid(uv+vec2(d,0)), c2 = vid(uv-vec2(d,0));
+    vec3 c3 = vid(uv+vec2(0,d)), c4 = vid(uv-vec2(0,d));
+    float edge = length(c1-c2) + length(c3-c4);
+    color = (edge > 0.1 ? 0.0 : 1.0) * color;
+    vec3 hsv = rgb2hsv(color);
+    hsv.x = clamp(hsv.x + 0.2, 0.0, 1.0);
+    color = hsv2rgb(hsv);
+  `)},
+  { id: "compression", name: "Compression", src: frag(`
+    float qt = floor(u_time / 0.11) * 0.11;
+    float sz = pow(2.0, -1.0/0.13);
+    vec2 rounded = floor(uv / sz) * sz;
+    uv = uv + hash(rounded + qt) * 0.02;
+    vec3 color = vid(uv);
+    color = floor(color * 6.2) / (6.2 - 1.0);
+    float delta = pow(0.23, 3.0);
+    vec3 blur = (vid(uv+vec2(-delta,0)) + vid(uv+vec2(delta,0))
+              + vid(uv+vec2(0,-delta)) + vid(uv+vec2(0,delta))) / 4.0;
+    color = color + (color - blur) * pow(1.9, 5.0);
+  `)},
+  { id: "mirror_world", name: "Mirror World", src: frag(`
+    uv = floor(uv / vec2(0.002, 0.027)) * vec2(0.002, 0.027);
+    vec2 c = uv - 0.5;
+    float angle = atan(c.y, c.x);
+    float radius = length(c);
+    angle = mod(angle, TAU);
+    angle = abs(angle - PI);
+    uv = vec2(cos(angle), sin(angle)) * radius + 0.5;
+    vec3 color = vid(uv);
+    float delta = pow(0.14, 3.0);
+    vec3 blur = (vid(uv+vec2(-delta,0)) + vid(uv+vec2(delta,0))
+              + vid(uv+vec2(0,-delta)) + vid(uv+vec2(0,delta))) / 4.0;
+    color = color + (color - blur) * pow(-1.8, 5.0);
+  `)},
+  { id: "knights", name: "Knights", src: frag(`
+    vec2 c = uv - 0.5;
+    float angle = atan(c.y, c.x);
+    float radius = length(c) + 0.4;
+    angle = mod(angle, TAU/3.0);
+    angle = abs(angle - PI/3.0);
+    uv = vec2(cos(angle), sin(angle)) * radius + 0.5;
+    uv += vec2(0.0, 0.3) * u_time / 5.0;
+    vec3 color = vid(uv);
+  `)},
+];
+
+// B&W preview shader (Bayer dither). Optional toggle.
+const PREVIEW_FRAG_ES1 = `
+precision highp float;
+uniform sampler2D u_tex;
+uniform vec2 u_res;
+uniform float u_print_width_px;
+uniform float u_bayer[64];
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_res;
+  vec3 c = texture2D(u_tex, uv).rgb;
+  float luma = dot(c, vec3(0.299, 0.587, 0.114));
+  luma = pow(luma, 1.0 / 1.8);
+  float scale = u_res.x / u_print_width_px;
+  vec2 p = floor(gl_FragCoord.xy / scale);
+  int x = int(mod(p.x, 8.0));
+  int y = int(mod(p.y, 8.0));
+  float threshold = 0.0;
+  for (int i = 0; i < 64; i++) {
+    if (i == y * 8 + x) { threshold = (u_bayer[i] + 0.5) / 64.0; }
+  }
+  float v = luma > threshold ? 1.0 : 0.0;
+  gl_FragColor = vec4(v, v, v, 1.0);
+}
+`;
+const BAYER = [
+   0, 32,  8, 40,  2, 34, 10, 42,
+  48, 16, 56, 24, 50, 18, 58, 26,
+  12, 44,  4, 36, 14, 46,  6, 38,
+  60, 28, 52, 20, 62, 30, 54, 22,
+   3, 35, 11, 43,  1, 33,  9, 41,
+  51, 19, 59, 27, 49, 17, 57, 25,
+  15, 47,  7, 39, 13, 45,  5, 37,
+  63, 31, 55, 23, 61, 29, 53, 21,
+];
+
+const VERT = `
+attribute vec2 a_pos;
+void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+function compile(gl, type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src); gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(sh) + "\n" + src);
+  return sh;
+}
+function program(gl, vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+
+const canvas = document.getElementById("canvas");
+const video = document.getElementById("video");
+const toast = document.getElementById("toast");
+const startBtn = document.getElementById("start");
+
+const gl = canvas.getContext("webgl", { preserveDrawingBuffer: true, antialias: false });
+if (!gl) { alert("WebGL not available"); throw new Error("no webgl"); }
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+const programs = FILTERS.map(f => {
+  try { return program(gl, VERT, f.src); }
+  catch (e) { console.error("compile fail", f.id, e); return null; }
+});
+let previewProgram = null;
+try { previewProgram = program(gl, VERT, PREVIEW_FRAG_ES1); }
+catch (e) { console.error("preview shader compile failed; bw disabled", e); }
+
+const fbo = gl.createFramebuffer();
+const fboTex = gl.createTexture();
+function ensureFboSize(w, h) {
+  gl.bindTexture(gl.TEXTURE_2D, fboTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+let current = 0;
+let widthMm = 80;
+let preview = false;
+let zoom = 1;        // software zoom factor (>=1)
+let hwZoomTrack = null; // MediaStreamTrack with zoom capability
+let hwZoomCaps = null;
+
+function showToast(msg) {
+  toast.textContent = msg; toast.classList.add("show");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => toast.classList.remove("show"), 1800);
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ---------- Bar controls ----------
+const bwBtn = document.getElementById("bw-btn");
+const lens58 = document.getElementById("lens58");
+const lens80 = document.getElementById("lens80");
+function refreshBar() {
+  bwBtn.classList.toggle("on", preview);
+  lens58.classList.toggle("on", widthMm === 58);
+  lens80.classList.toggle("on", widthMm === 80);
+}
+bwBtn.addEventListener("click", () => {
+  if (!previewProgram) { showToast("b&w not supported"); return; }
+  preview = !preview; refreshBar();
+});
+lens58.addEventListener("click", () => { widthMm = 58; refreshBar(); });
+lens80.addEventListener("click", () => { widthMm = 80; refreshBar(); });
+refreshBar();
+
+// ---------- Carousel ----------
+const carousel = document.getElementById("carousel");
+const padL = document.createElement("div"); padL.className = "pad"; carousel.appendChild(padL);
+FILTERS.forEach((f, i) => {
+  const b = document.createElement("button");
+  b.className = "item";
+  b.textContent = f.name;
+  b.dataset.idx = i;
+  b.addEventListener("click", () => selectFilter(i, true));
+  carousel.appendChild(b);
+});
+const padR = document.createElement("div"); padR.className = "pad"; carousel.appendChild(padR);
+
+function itemEls() { return carousel.querySelectorAll(".item"); }
+function selectFilter(i, scroll) {
+  current = ((i % FILTERS.length) + FILTERS.length) % FILTERS.length;
+  itemEls().forEach((el, k) => el.classList.toggle("on", k === current));
+  if (scroll) {
+    const el = itemEls()[current];
+    const target = el.offsetLeft + el.offsetWidth/2 - carousel.clientWidth/2;
+    carousel.scrollTo({ left: target, behavior: "smooth" });
+  }
+}
+let scrollIdleT = null;
+carousel.addEventListener("scroll", () => {
+  // find item nearest to center
+  const cx = carousel.scrollLeft + carousel.clientWidth/2;
+  let best = 0, bestD = Infinity;
+  itemEls().forEach((el, k) => {
+    const c = el.offsetLeft + el.offsetWidth/2;
+    const d = Math.abs(c - cx);
+    if (d < bestD) { bestD = d; best = k; }
+  });
+  if (best !== current) {
+    current = best;
+    itemEls().forEach((el, k) => el.classList.toggle("on", k === current));
+  }
+  clearTimeout(scrollIdleT);
+  scrollIdleT = setTimeout(() => selectFilter(current, true), 120);
+});
+// Initial selection (default to second filter, matching prior behavior)
+requestAnimationFrame(() => selectFilter(1, true));
+
+// ---------- Camera ----------
+let facing = "environment";
+let currentStream = null;
+const camBtn = document.getElementById("cam-btn");
+
+function stopStream() {
+  if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
+  hwZoomTrack = null; hwZoomCaps = null;
+}
+
+async function openCamera(constraints) {
+  stopStream();
+  const stream = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
+  currentStream = stream;
+  video.srcObject = stream;
+  await video.play();
+  const t = stream.getVideoTracks()[0];
+  const fm = (t && t.getSettings && t.getSettings().facingMode) || "user";
+  canvas.classList.toggle("mirror", fm !== "environment");
+  // Probe hardware zoom
+  zoom = 1;
+  if (t && t.getCapabilities) {
+    const caps = t.getCapabilities();
+    if (caps && typeof caps.zoom === "object" && caps.zoom && "max" in caps.zoom) {
+      hwZoomTrack = t; hwZoomCaps = caps.zoom;
+      try { await t.applyConstraints({ advanced: [{ zoom: caps.zoom.min || 1 }] }); } catch (e) {}
+    }
+  }
+}
+
+async function refreshCameras() {
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const n = devs.filter(d => d.kind === "videoinput").length;
+    camBtn.hidden = n < 2;
+  } catch (e) { console.error(e); }
+}
+
+async function startCamera() {
+  startBtn.style.display = "none";
+  try {
+    await openCamera({ facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } });
+    await refreshCameras();
+    requestAnimationFrame(loop);
+  } catch (e) {
+    startBtn.style.display = "flex";
+    startBtn.textContent = "camera blocked: " + e.message;
+  }
+}
+startBtn.addEventListener("click", startCamera);
+
+camBtn.addEventListener("click", async () => {
+  const next = facing === "user" ? "environment" : "user";
+  const prev = facing;
+  facing = next;
+  try {
+    await openCamera({ facingMode: { exact: next }, width: { ideal: 1280 }, height: { ideal: 720 } });
+  } catch (e) {
+    try { await openCamera({ facingMode: { ideal: next } }); }
+    catch (e2) { facing = prev; canvas.classList.toggle("mirror", facing === "environment"); showToast("switch failed: " + e2.message); }
+  }
+});
+navigator.mediaDevices?.addEventListener?.("devicechange", refreshCameras);
+
+// ---------- Pinch zoom (hardware where available, software fallback) ----------
+let pinchStartDist = 0;
+let pinchStartZoom = 1;
+function dist(t0, t1) {
+  const dx = t0.clientX - t1.clientX, dy = t0.clientY - t1.clientY;
+  return Math.hypot(dx, dy);
+}
+async function applyZoom(z) {
+  if (hwZoomTrack && hwZoomCaps) {
+    const min = hwZoomCaps.min || 1, max = hwZoomCaps.max || 1;
+    // Map software z (>=1) into hardware zoom range proportionally.
+    const hw = Math.max(min, Math.min(max, min + (z - 1) * (max - min) / 4));
+    try { await hwZoomTrack.applyConstraints({ advanced: [{ zoom: hw }] }); } catch (e) {}
+    zoom = z;
+  } else {
+    zoom = Math.max(1, Math.min(6, z));
+  }
+}
+window.addEventListener("touchstart", (e) => {
+  if (e.touches.length === 2) {
+    pinchStartDist = dist(e.touches[0], e.touches[1]);
+    pinchStartZoom = zoom;
+  }
+}, { passive: true });
+window.addEventListener("touchmove", (e) => {
+  if (e.touches.length === 2 && pinchStartDist > 0) {
+    const d = dist(e.touches[0], e.touches[1]);
+    const factor = d / pinchStartDist;
+    applyZoom(pinchStartZoom * factor);
+  }
+}, { passive: true });
+window.addEventListener("touchend", (e) => {
+  if (e.touches.length < 2) pinchStartDist = 0;
+}, { passive: true });
+
+// ---------- Render loop ----------
+const t0 = performance.now();
+function loop() {
+  if (video.readyState >= 2) {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+    draw();
+  }
+  requestAnimationFrame(loop);
+}
+
+function softwareZoomViewport() {
+  // For software zoom, render a centered cropped quad by adjusting viewport
+  // around the canvas. We instead scale via vertex by setting viewport bigger
+  // than canvas — simpler: emulate via texture coords would need shader edit.
+  // Here we use the canvas CSS transform for software zoom.
+  if (!hwZoomTrack) {
+    canvas.style.transform = (canvas.classList.contains("mirror") ? "scaleX(-1) " : "") + `scale(${zoom})`;
+    canvas.style.transformOrigin = "center center";
+  } else {
+    canvas.style.transform = "";
+  }
+}
+
+function drawFilterTo(targetFbo, srcTex) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  const p = programs[current];
+  if (!p) return;
+  gl.useProgram(p);
+  const loc = gl.getAttribLocation(p, "a_pos");
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  gl.uniform2f(gl.getUniformLocation(p, "u_res"), canvas.width, canvas.height);
+  gl.uniform1f(gl.getUniformLocation(p, "u_time"), (performance.now() - t0) / 1000);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, srcTex);
+  gl.uniform1i(gl.getUniformLocation(p, "u_tex"), 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+function drawPreviewFromFbo() {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(previewProgram);
+  const loc = gl.getAttribLocation(previewProgram, "a_pos");
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  gl.uniform2f(gl.getUniformLocation(previewProgram, "u_res"), canvas.width, canvas.height);
+  gl.uniform1f(gl.getUniformLocation(previewProgram, "u_print_width_px"), widthMm === 58 ? 384 : 576);
+  gl.uniform1fv(gl.getUniformLocation(previewProgram, "u_bayer[0]"), new Float32Array(BAYER));
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, fboTex);
+  gl.uniform1i(gl.getUniformLocation(previewProgram, "u_tex"), 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+let lastFboW = 0, lastFboH = 0;
+function draw() {
+  softwareZoomViewport();
+  if (preview && previewProgram) {
+    if (canvas.width !== lastFboW || canvas.height !== lastFboH) {
+      ensureFboSize(canvas.width, canvas.height);
+      lastFboW = canvas.width; lastFboH = canvas.height;
+    }
+    drawFilterTo(fbo, tex);
+    drawPreviewFromFbo();
+  } else {
+    drawFilterTo(null, tex);
+  }
+}
+
+// ---------- Shutter ----------
+const iris = document.getElementById("iris");
+document.getElementById("shutter").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  draw();
+  const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
+  iris.classList.add("firing");
+  // Force reflow so the initial (open) state is committed before we transition.
+  void iris.offsetWidth;
+  iris.classList.add("closed");
+  setTimeout(() => {
+    iris.classList.remove("closed");
+    setTimeout(() => iris.classList.remove("firing"), 250);
+  }, 400);
+  if (!blob) { showToast("capture failed"); return; }
+  const fd = new FormData();
+  fd.append("image", blob, "photobooth.png");
+  fd.append("width_mm", String(widthMm));
+  fd.append("count", "1");
+  showToast("printing…");
+  try {
+    const r = await fetch("/print", { method: "POST", body: fd });
+    if (!r.ok) throw new Error(r.status);
+    const j = await r.json();
+    showToast(`queued ${j.job_ids.length}`);
+  } catch (e) {
+    showToast("print failed: " + e.message);
+  }
+});
+</script>
+</body>
+</html>
